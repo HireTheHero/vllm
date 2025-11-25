@@ -181,6 +181,10 @@ class ModelRunnerOutput:
     # req_id -> num_nans_in_logits
     num_nans_in_logits: dict[str, int] | None = None
 
+    # [num_reqs] where each element is [num_layers] of tensors
+    # Each tensor has shape [seq_len, hidden_size] or [hidden_size] for single token
+    hidden_states: list[list[torch.Tensor] | None] = field(default_factory=list)
+
 
 # ModelRunnerOutput wrapper for async scheduling.
 class AsyncModelRunnerOutput(ABC):
@@ -225,6 +229,9 @@ def make_empty_encoder_model_runner_output(
     # Pooler outputs are not available yet ⇒ use None placeholders
     pooler_output: list[torch.Tensor | None] = [None for _ in req_ids]
 
+    # Hidden states are not available yet ⇒ use None placeholders
+    hidden_states: list[list[torch.Tensor] | None] = [None for _ in req_ids]
+
     return ModelRunnerOutput(
         req_ids=req_ids,
         req_id_to_index=req_id_to_index,
@@ -235,6 +242,7 @@ def make_empty_encoder_model_runner_output(
         kv_connector_output=None,
         ec_connector_output=None,
         num_nans_in_logits=None,
+        hidden_states=hidden_states,
     )
 
 
@@ -246,4 +254,5 @@ EMPTY_MODEL_RUNNER_OUTPUT = ModelRunnerOutput(
     prompt_logprobs_dict={},
     pooler_output=[],
     num_nans_in_logits=None,
+    hidden_states=[],
 )

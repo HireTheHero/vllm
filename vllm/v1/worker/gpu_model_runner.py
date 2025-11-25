@@ -2724,6 +2724,45 @@ class GPUModelRunner(
             **model_kwargs,
         )
 
+    def _check_and_configure_hidden_states_output(
+        self, scheduler_output: "SchedulerOutput"
+    ) -> tuple[bool, list[int] | None]:
+        """Check if any request needs hidden states and configure model if needed.
+
+        Returns:
+            Tuple of (needs_hidden_states, layer_indices)
+        """
+        needs_hidden_states = False
+        hidden_state_layers: list[int] | None = None
+
+        # Check new requests
+        for new_req in scheduler_output.scheduled_new_reqs:
+            if new_req.sampling_params and new_req.sampling_params.output_hidden_states:
+                needs_hidden_states = True
+                if new_req.sampling_params.hidden_state_layers is not None:
+                    # User specified specific layers
+                    if hidden_state_layers is None:
+                        hidden_state_layers = new_req.sampling_params.hidden_state_layers.copy()
+                    else:
+                        # Merge layer requests from multiple requests
+                        hidden_state_layers = sorted(set(hidden_state_layers + new_req.sampling_params.hidden_state_layers))
+                break
+
+        # Check cached requests
+        if not needs_hidden_states:
+            for req_id in scheduler_output.scheduled_cached_reqs.req_ids:
+                req_state = self.requests.get(req_id)
+                if req_state and req_state.sampling_params and req_state.sampling_params.output_hidden_states:
+                    needs_hidden_states = True
+                    if req_state.sampling_params.hidden_state_layers is not None:
+                        if hidden_state_layers is None:
+                            hidden_state_layers = req_state.sampling_params.hidden_state_layers.copy()
+                        else:
+                            hidden_state_layers = sorted(set(hidden_state_layers + req_state.sampling_params.hidden_state_layers))
+                    break
+
+        return needs_hidden_states, hidden_state_layers
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -2879,6 +2918,21 @@ class GPUModelRunner(
             # Mark KV scales as calculated after the first forward pass
             self.calculate_kv_scales = False
 
+        # Configure hidden states output if requested by any request
+        needs_hidden_states, hidden_state_layers = self._check_and_configure_hidden_states_output(scheduler_output)
+        original_use_aux_hidden_state_outputs = self.use_aux_hidden_state_outputs
+        if needs_hidden_states and not self.use_aux_hidden_state_outputs:
+            # Temporarily enable aux hidden state outputs for user requests
+            self.use_aux_hidden_state_outputs = True
+            # Check if model supports SupportsEagle3 interface
+            from vllm.model_executor.models.interfaces import SupportsEagle3
+            if isinstance(self.model, SupportsEagle3):
+                # If no specific layers requested, output all layers
+                if hidden_state_layers is None:
+                    num_layers = self.model_config.hf_config.num_hidden_layers
+                    hidden_state_layers = list(range(num_layers))
+                self.model.set_aux_hidden_state_layers(tuple(hidden_state_layers))
+
         # Run the model.
         # Use persistent buffers for CUDA graphs.
         with (
@@ -2971,6 +3025,11 @@ class GPUModelRunner(
             ec_connector_output,
         )
         self.kv_connector_output = kv_connector_output
+
+        # Restore original aux hidden state outputs setting if we changed it
+        if needs_hidden_states and not original_use_aux_hidden_state_outputs:
+            self.use_aux_hidden_state_outputs = original_use_aux_hidden_state_outputs
+
         return None
 
     @torch.inference_mode
@@ -3107,6 +3166,30 @@ class GPUModelRunner(
 
         with record_function_or_nullcontext("gpu_model_runner: eplb"):
             self.eplb_step()
+
+        # Organize hidden states by request if available
+        hidden_states_by_req: list[list[torch.Tensor] | None] = []
+        if aux_hidden_states is not None and len(aux_hidden_states) > 0:
+            # aux_hidden_states is a list of tensors, one per layer
+            # Each tensor has shape [num_tokens, hidden_size]
+            # We need to split by request based on num_scheduled_tokens
+            num_reqs = len(req_ids_output_copy)
+            req_ids_from_batch = self.input_batch.req_ids[:num_reqs]
+
+            for req_idx, req_id in enumerate(req_ids_from_batch):
+                req_state = self.requests.get(req_id)
+                # Check if this request wants hidden states
+                if req_state and req_state.sampling_params and req_state.sampling_params.output_hidden_states:
+                    # Extract hidden states for this request
+                    # We use the last token's hidden states for this request
+                    req_hidden_states = [layer_hidden[req_idx:req_idx+1].squeeze(0) for layer_hidden in aux_hidden_states]
+                    hidden_states_by_req.append(req_hidden_states)
+                else:
+                    hidden_states_by_req.append(None)
+        else:
+            # No hidden states available, fill with None
+            hidden_states_by_req = [None] * len(req_ids_output_copy)
+
         with record_function_or_nullcontext("gpu_model_runner: ModelRunnerOutput"):
             output = ModelRunnerOutput(
                 req_ids=req_ids_output_copy,
@@ -3120,6 +3203,7 @@ class GPUModelRunner(
                 if self.supports_mm_inputs
                 else None,
                 num_nans_in_logits=num_nans_in_logits,
+                hidden_states=hidden_states_by_req,
             )
 
         if not self.use_async_scheduling:

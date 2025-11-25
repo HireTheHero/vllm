@@ -36,6 +36,9 @@ class CompletionOutput:
             to stop, None if the completion finished for some other reason
             including encountering the EOS token.
         lora_request: The LoRA request that was used to generate the output.
+        hidden_states: The hidden states from transformer layers if requested.
+            List of tensors, one per layer. Each tensor has shape [seq_len, hidden_size]
+            or [hidden_size] for the final token only, depending on implementation.
     """
 
     index: int
@@ -46,11 +49,15 @@ class CompletionOutput:
     finish_reason: str | None = None
     stop_reason: int | str | None = None
     lora_request: LoRARequest | None = None
+    hidden_states: list[torch.Tensor] | None = None
 
     def finished(self) -> bool:
         return self.finish_reason is not None
 
     def __repr__(self) -> str:
+        hidden_states_repr = None
+        if self.hidden_states is not None:
+            hidden_states_repr = f"[{len(self.hidden_states)} layers]"
         return (
             f"CompletionOutput(index={self.index}, "
             f"text={self.text!r}, "
@@ -58,7 +65,8 @@ class CompletionOutput:
             f"cumulative_logprob={self.cumulative_logprob}, "
             f"logprobs={self.logprobs}, "
             f"finish_reason={self.finish_reason}, "
-            f"stop_reason={self.stop_reason})"
+            f"stop_reason={self.stop_reason}, "
+            f"hidden_states={hidden_states_repr})"
         )
 
 

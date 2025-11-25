@@ -211,6 +211,14 @@ class SamplingParams(
     set to an integer k, will use only the last k tokens from the prompt
     (i.e., left truncation). If set to `None`, truncation is disabled."""
     output_kind: RequestOutputKind = RequestOutputKind.CUMULATIVE
+    output_hidden_states: bool = False
+    """Whether to return hidden states from all transformer layers. When enabled,
+    each output will include hidden states as tensors. Note: This significantly
+    increases memory usage, especially for long sequences."""
+    hidden_state_layers: list[int] | None = None
+    """Specific layer indices to output hidden states from. If None and
+    output_hidden_states is True, all layers will be returned. Layer indices
+    are 0-based (0 = first layer, n-1 = last layer for n-layer model)."""
 
     # The below fields are not supposed to be used as an input.
     # They are set in post_init.
@@ -270,6 +278,8 @@ class SamplingParams(
         logit_bias: dict[int, float] | dict[str, float] | None = None,
         allowed_token_ids: list[int] | None = None,
         extra_args: dict[str, Any] | None = None,
+        output_hidden_states: bool = False,
+        hidden_state_layers: list[int] | None = None,
     ) -> "SamplingParams":
         if logit_bias is not None:
             # Convert token_id to integer
@@ -310,6 +320,8 @@ class SamplingParams(
             logit_bias=logit_bias,
             allowed_token_ids=allowed_token_ids,
             extra_args=extra_args,
+            output_hidden_states=output_hidden_states,
+            hidden_state_layers=hidden_state_layers,
         )
 
     def __post_init__(self) -> None:
